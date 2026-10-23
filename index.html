@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Rotten Depths</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #000; overflow: hidden; font-family: monospace; }
+      canvas { display: block; }
+      #crosshair.guard { width: 24px; height: 28px; margin: -14px -12px; background: transparent; border: 2px solid #9ec3d8; border-radius: 4px 4px 14px 14px; opacity: .85; }
+      #overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 40;
+        background: radial-gradient(ellipse at center, rgba(8,5,4,.78) 0%, rgba(0,0,0,.93) 100%); overflow-y: auto; }
+      #overlay.hidden { display: none; }
+      #crosshair { position: fixed; left: 50%; top: 50%; width: 4px; height: 4px; margin: -2px;
+        background: #c9b99a; border-radius: 50%; opacity: .7; pointer-events: none; }
+    </style>
+  </head>
+  <body>
+    <div id="crosshair"></div>
+    <div id="overlay"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
