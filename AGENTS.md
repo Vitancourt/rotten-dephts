@@ -22,6 +22,7 @@ Online PvP/extraction is a later phase; do not build it before then.
 ## Docs and workflow
 - Design lives in `docs/PRD.md`; delivery plan in `docs/phases/phaseX.md`. `docs/` is gitignored.
 - When a bug is reported, create its report as `docs/buglist/bugN.md`, where `N` is the next bug number. Investigate the relevant code and document a researched possible solution in the report. Include a completion checkbox (`- [ ] Bug fixed and verified`) and mark it with an X (`- [x]`) only after the fix is verified.
+- When asked to create a feature doc, create it as `docs/features/featureX.md`, where `X` is the next feature number. Describe the requested feature, research the relevant code and document a researched approach for implementing it. Include a completion checkbox (`- [ ] Feature implemented and verified`) and mark it with an X (`- [x]`) only after the feature is implemented and verified.
 - Work one phase at a time, in order. Do not start phase N+1 until phase N's acceptance criteria pass.
 - When a task or acceptance criterion in `docs/phases/phaseX.md` is done, mark its checkbox with an X (`- [x]`) right away. Never mark something done that hasn't been verified.
 - Every phase must leave the game deployable and playable.
