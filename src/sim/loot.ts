@@ -18,9 +18,9 @@ export interface Drop {
   spot?: number;
 }
 
-const GOLD: Record<EnemyKind, [number, number]> = { skeleton: [3, 8], zombie: [6, 14] };
-const HEAL_CHANCE: Record<EnemyKind, number> = { skeleton: 0.14, zombie: 0.25 };
-const ITEM_CHANCE: Record<EnemyKind, number> = { skeleton: 0.3, zombie: 0.5 };
+const GOLD: Record<EnemyKind, [number, number]> = { skeleton: [3, 8], archer: [4, 10], mage: [5, 12], zombie: [6, 14] };
+const HEAL_CHANCE: Record<EnemyKind, number> = { skeleton: 0.14, archer: 0.18, mage: 0.22, zombie: 0.25 };
+const ITEM_CHANCE: Record<EnemyKind, number> = { skeleton: 0.3, archer: 0.38, mage: 0.45, zombie: 0.5 };
 
 export interface Loot { gold: number; items: Item[]; heal?: boolean }
 

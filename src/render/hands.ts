@@ -1,9 +1,13 @@
 import * as THREE from 'three';
+import { roundedBox } from './geo';
+import { surfaceMaterial } from './textures';
 
-const leather = new THREE.MeshStandardMaterial({ color: 0x7a5538, roughness: 1, flatShading: true });
-const knuckle = new THREE.MeshStandardMaterial({ color: 0x93694a, roughness: 1, flatShading: true });
-const cuffMat = new THREE.MeshStandardMaterial({ color: 0x4a382a, roughness: 0.9, flatShading: true });
-const sleeve = new THREE.MeshStandardMaterial({ color: 0x544a3e, roughness: 1, flatShading: true });
+const leather = surfaceMaterial('leather', 0x8a6040);
+const knuckle = surfaceMaterial('leather', 0xa6785a);
+const cuffMat = surfaceMaterial('leather', 0x4a382a);
+const sleeve = surfaceMaterial('cloth', 0x6a5e50);
+
+for (const m of [leather, knuckle, cuffMat, sleeve]) m.normalScale.set(0.3, 0.3);
 
 export interface HandRig {
   group: THREE.Group;
@@ -12,7 +16,7 @@ export interface HandRig {
 }
 
 function box(w: number, h: number, d: number, m: THREE.Material, x = 0, y = 0, z = 0): THREE.Mesh {
-  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m);
+  const mesh = new THREE.Mesh(roundedBox(w, h, d), m);
   mesh.position.set(x, y, z);
   return mesh;
 }

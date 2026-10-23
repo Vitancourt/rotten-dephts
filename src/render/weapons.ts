@@ -1,12 +1,14 @@
 import * as THREE from 'three';
 import { RARITY_COLOR, rarityIndex, type Item } from '../sim/items';
+import { roundedBox } from './geo';
+import { surfaceMaterial } from './textures';
 
-const steel = new THREE.MeshStandardMaterial({ color: 0x8d949c, roughness: 0.45, metalness: 0.7, flatShading: true });
-const wood = new THREE.MeshStandardMaterial({ color: 0x5a3d22, roughness: 1, flatShading: true });
-const leather = new THREE.MeshStandardMaterial({ color: 0x2b1d14, roughness: 1, flatShading: true });
+const steel = surfaceMaterial('metal', 0x9aa1aa, { rough: 0.7, metalness: 0.85 });
+const wood = surfaceMaterial('wood', 0x6a4a2c);
+const leather = surfaceMaterial('leather', 0x3a281c);
 
 function box(w: number, h: number, d: number, m: THREE.Material, x = 0, y = 0, z = 0): THREE.Mesh {
-  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m);
+  const mesh = new THREE.Mesh(roundedBox(w, h, d), m);
   mesh.position.set(x, y, z);
   return mesh;
 }
@@ -40,7 +42,7 @@ export function buildWeaponMesh(item: Item): THREE.Group {
   return g;
 }
 
-const woodShield = new THREE.MeshStandardMaterial({ color: 0x5a3d22, roughness: 1, flatShading: true });
+const woodShield = surfaceMaterial('wood', 0x6a4a2c);
 
 /**
  * A shield held in the left hand. Centred on the origin; its face points away from the player (-Z)

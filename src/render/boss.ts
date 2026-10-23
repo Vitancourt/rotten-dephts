@@ -1,12 +1,14 @@
 import * as THREE from 'three';
 import { buildRig, type Rig } from './enemies';
+import { roundedBox } from './geo';
+import { surfaceMaterial } from './textures';
 import { INTRO_TIME, bossActive, type AttackDef, type Boss, type BossKind } from '../sim/boss';
 
 const TINT: Record<BossKind, number> = { colossus: 0x9a8f78, abomination: 0x56693f, warden: 0x3a3f4a };
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
 
-const metal = new THREE.MeshStandardMaterial({ color: 0x4a4540, roughness: 0.6, metalness: 0.6, flatShading: true });
+const metal = surfaceMaterial('metal', 0x5a544e, { rough: 0.8, metalness: 0.75 });
 const glowRed = new THREE.MeshBasicMaterial({ color: 0xff3a1a });
 
 export interface BossView {
@@ -19,7 +21,7 @@ export interface BossView {
 function decorate(kind: BossKind, rig: Rig): void {
   const add = (m: THREE.Mesh) => rig.body.add(m);
   const box = (w: number, h: number, d: number, mat: THREE.Material, x: number, y: number, z: number, rz = 0) => {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+    const m = new THREE.Mesh(roundedBox(w, h, d), mat);
     m.position.set(x, y, z);
     m.rotation.z = rz;
     return m;
@@ -41,7 +43,7 @@ function decorate(kind: BossKind, rig: Rig): void {
 }
 
 export function createBossView(parent: THREE.Object3D, boss: Boss): BossView {
-  const rig = buildRig(boss.kind === 'abomination' ? 'zombie' : 'skeleton');
+  const rig = buildRig(boss.kind === 'abomination' ? 'zombie' : 'skeleton', false);
   const tint = new THREE.Color(TINT[boss.kind]);
   for (const m of rig.mats) m.color.lerp(tint, 0.55);
   decorate(boss.kind, rig);

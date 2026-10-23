@@ -1,8 +1,9 @@
 // Undead enemy AI. Pure logic: no Three.js or DOM imports.
 import { pushOutCircle, type Solids } from './movement';
 import { findPath, lineClear, type NavGrid } from './nav';
+import type { ProjectileKind } from './projectile';
 
-export type EnemyKind = 'skeleton' | 'zombie';
+export type EnemyKind = 'skeleton' | 'zombie' | 'archer' | 'mage';
 export type EnemyState = 'dormant' | 'rising' | 'chase' | 'windup' | 'recover' | 'stagger' | 'dead';
 
 export interface EnemyDef {
@@ -11,8 +12,12 @@ export interface EnemyDef {
   radius: number;
   damage: number;
   reach: number; // attack range between bodies' centres
-  trigger: number; // distance at which a dormant enemy wakes
+  trigger: number; // distance at which an idle enemy wakes (skeletons stand watch; zombies lie still)
   riseTime: number;
+  /** Ranged enemies only: how far they shoot from, the distance they back off to, and what they throw. */
+  range?: number;
+  keepAway?: number;
+  projectile?: ProjectileKind;
   windup: number;
   recover: number;
   staggerTime: number;
@@ -22,8 +27,16 @@ export interface EnemyDef {
 
 export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
   skeleton: {
-    hp: 36, speed: 2.7, radius: 0.35, damage: 8, reach: 1.45, trigger: 4.6, riseTime: 1.4,
+    hp: 36, speed: 2.7, radius: 0.35, damage: 8, reach: 1.45, trigger: 6.5, riseTime: 0.55,
     windup: 0.6, recover: 0.9, staggerTime: 0.35, superArmor: false, xp: 10,
+  },
+  archer: {
+    hp: 26, speed: 2.3, radius: 0.33, damage: 9, reach: 0, trigger: 11, riseTime: 0.55, range: 16, keepAway: 5, projectile: 'arrow',
+    windup: 1.0, recover: 1.5, staggerTime: 0.35, superArmor: false, xp: 14,
+  },
+  mage: {
+    hp: 22, speed: 2.1, radius: 0.33, damage: 15, reach: 0, trigger: 10, riseTime: 0.55, range: 14, keepAway: 6, projectile: 'fireball',
+    windup: 1.3, recover: 2.0, staggerTime: 0.4, superArmor: false, xp: 20,
   },
   zombie: {
     hp: 80, speed: 1.35, radius: 0.42, damage: 20, reach: 1.55, trigger: 3.6, riseTime: 2.3,
@@ -59,12 +72,14 @@ export interface Enemy {
   hpMul: number; // depth scaling
   dmgMul: number;
   maxHp: number;
+  /** Index into the floor's spawn list, so kills can be remembered between visits. */
+  spawnIndex?: number;
 }
 
-export type EnemyEvent = { type: 'rise' } | { type: 'windup' } | { type: 'hit'; damage: number; fromX: number; fromZ: number };
+export type EnemyEvent = { type: 'rise' } | { type: 'windup' } | { type: 'shoot'; x: number; z: number; tx: number; tz: number; damage: number; proj: ProjectileKind } | { type: 'hit'; damage: number; fromX: number; fromZ: number };
 
-export const hpScale = (depth: number): number => 1 + 0.15 * (depth - 1);
-export const dmgScale = (depth: number): number => 1 + 0.1 * (depth - 1);
+export const hpScale = (depth: number): number => 1 + 0.1 * (depth - 1);
+export const dmgScale = (depth: number): number => 1 + 0.05 * (depth - 1);
 
 export function createEnemy(kind: EnemyKind, x: number, z: number, depth = 1): Enemy {
   const e = {
@@ -168,12 +183,13 @@ export function stepEnemy(
   switch (e.state) {
     case 'dormant':
       if (playerAlive && dist < d.trigger && (dist < 2.2 || lineClear(nav, e.x, e.z, px, pz))) {
-        faceToward(e, px, pz, 99, 99);
         setState(e, 'rising');
         events.push({ type: 'rise' });
       }
       break;
     case 'rising':
+      // Turn towards the player while getting up (a lying corpse waits until it is half upright).
+      if (playerAlive && (e.kind === 'skeleton' || e.stateTime > d.riseTime * 0.45)) faceToward(e, px, pz, dt, e.kind === 'skeleton' ? 6 : 3);
       if (e.stateTime >= d.riseTime) setState(e, 'chase');
       break;
     case 'stagger':
@@ -182,6 +198,18 @@ export function stepEnemy(
     case 'chase': {
       if (!playerAlive) break;
       faceToward(e, px, pz, dt, 6);
+      if (d.range !== undefined && lineClear(nav, e.x, e.z, px, pz) && dist <= d.range) {
+        // In range with a clear shot: back away if crowded, otherwise draw and loose.
+        if (dist < (d.keepAway ?? 5) && e.stateTime < 1.2) {
+          moveToward(e, e.x + (e.x - px), e.z + (e.z - pz), d.speed * e.speedMul * 0.9, dt, solids);
+          e.moving = true;
+          e.walkPhase += dt * d.speed * e.speedMul * 3.2;
+        } else if (e.stateTime > 0.35) {
+          setState(e, 'windup');
+          events.push({ type: 'windup' });
+        }
+        break;
+      }
       if (dist <= d.reach) {
         setState(e, 'windup');
         events.push({ type: 'windup' });
@@ -211,9 +239,11 @@ export function stepEnemy(
       break;
     }
     case 'windup':
-      faceToward(e, px, pz, dt, 2.5);
+      faceToward(e, px, pz, dt, d.range !== undefined ? 3.5 : 2.5);
       if (e.stateTime >= d.windup) {
-        if (playerAlive && dist <= d.reach + 0.35) events.push({ type: 'hit', damage: Math.round(d.damage * e.dmgMul), fromX: e.x, fromZ: e.z });
+        if (d.range !== undefined) {
+          if (playerAlive) events.push({ type: 'shoot', x: e.x, z: e.z, tx: px, tz: pz, damage: Math.round(d.damage * e.dmgMul), proj: d.projectile ?? 'arrow' });
+        } else if (playerAlive && dist <= d.reach + 0.35) events.push({ type: 'hit', damage: Math.round(d.damage * e.dmgMul), fromX: e.x, fromZ: e.z });
         setState(e, 'recover');
       }
       break;

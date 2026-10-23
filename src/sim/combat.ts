@@ -23,6 +23,8 @@ export interface CombatState {
   guard: number;
   /** Seconds left that the guard is broken (can neither block nor swing). */
   guardBroken: number;
+  /** Set when sprinting drained all stamina; sprinting stays off until some has regenerated. */
+  sprintLock: boolean;
 }
 
 export interface Target {
@@ -35,8 +37,24 @@ export interface Target {
 export const STAMINA_REGEN = 28; // default, per second
 export const STAMINA_DELAY = 0.7; // seconds before regen starts
 
+export const SPRINT_STAMINA = 12; // per second of sprinting
+export const SPRINT_RESUME = 20; // stamina needed to sprint again after running dry
+
+/**
+ * Spends stamina while the player sprints. Returns whether sprinting is allowed this tick;
+ * it cuts out at zero stamina and only resumes once SPRINT_RESUME has regenerated.
+ */
+export function stepSprint(c: CombatState, wantsSprint: boolean, dt: number): boolean {
+  if (c.sprintLock && c.stamina >= SPRINT_RESUME) c.sprintLock = false;
+  if (!wantsSprint || c.sprintLock || c.stamina <= 0) return false;
+  c.stamina = Math.max(0, c.stamina - SPRINT_STAMINA * dt);
+  c.sinceStaminaUse = 0; // no regeneration while running
+  if (c.stamina <= 0) c.sprintLock = true;
+  return true;
+}
+
 export function createCombat(): CombatState {
-  return { stamina: 100, maxStamina: 100, phase: 'idle', phaseTime: 0, sinceStaminaUse: 99, regen: STAMINA_REGEN, guard: 0, guardBroken: 0 };
+  return { stamina: 100, maxStamina: 100, phase: 'idle', phaseTime: 0, sinceStaminaUse: 99, regen: STAMINA_REGEN, guard: 0, guardBroken: 0, sprintLock: false };
 }
 
 /** 0..1 progress through the current phase. */

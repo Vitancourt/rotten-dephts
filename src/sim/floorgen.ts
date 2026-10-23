@@ -14,6 +14,11 @@ export interface LootSpot { x: number; z: number; kind: 'gold' | 'item' | 'heal'
 /** A torch on a wall face; (nx, nz) points from the wall into the open space. */
 export interface TorchSpot { x: number; z: number; nx: number; nz: number }
 
+/** A wall tile holding a staircase, and where the player stands to use it. (nx, nz) points into the room. */
+export interface StairsInfo { tx: number; ty: number; nx: number; nz: number; frontX: number; frontZ: number }
+/** Where the merchant stands; (nx, nz) is the way he faces. */
+export interface MerchantSpot { x: number; z: number; nx: number; nz: number }
+
 export interface Floor {
   depth: number;
   seed: number;
@@ -26,7 +31,11 @@ export interface Floor {
   isBossFloor: boolean;
   start: { x: number; z: number };
   /** Wall tile holding the stairs, and where the player stands to use them. */
-  stairs: { tx: number; ty: number; nx: number; nz: number; frontX: number; frontZ: number };
+  stairs: StairsInfo;
+  /** Stairs back up, in the start room (none on floor 1). */
+  upStairs: StairsInfo | null;
+  /** A merchant by the up stairs (none on floor 1). */
+  merchant: MerchantSpot | null;
   boss: { x: number; z: number } | null;
   spawns: Spawn[];
   loot: LootSpot[];
@@ -175,34 +184,62 @@ function attempt(seed: number, depth: number): Floor | null {
 
   const f = { tiles, w: MAP_W, h: MAP_H };
 
-  // Stairs: a wall tile on the stairs room's perimeter, three walls wide and backed by wall.
+  // Stairs: a wall tile on a room's perimeter, three walls wide and backed by wall.
   const sr = rooms[stairsRoom];
   type Cand = { tx: number; ty: number; nx: number; nz: number };
-  const cands: Cand[] = [];
   const wallAt = (x: number, y: number) => x >= 1 && y >= 1 && x < MAP_W - 1 && y < MAP_H - 1 && !open(f, x, y);
-  for (let x = sr.x; x < sr.x + sr.w; x++) {
-    cands.push({ tx: x, ty: sr.y - 1, nx: 0, nz: 1 });
-    cands.push({ tx: x, ty: sr.y + sr.h, nx: 0, nz: -1 });
-  }
-  for (let y = sr.y; y < sr.y + sr.h; y++) {
-    cands.push({ tx: sr.x - 1, ty: y, nx: 1, nz: 0 });
-    cands.push({ tx: sr.x + sr.w, ty: y, nx: -1, nz: 0 });
-  }
-  const [rcx, rcy] = center(sr);
-  const good = cands
-    .filter((c) => {
-      const lx = c.nz !== 0 ? 1 : 0, ly = c.nx !== 0 ? 1 : 0; // lateral direction
-      return wallAt(c.tx, c.ty) && wallAt(c.tx + lx, c.ty + ly) && wallAt(c.tx - lx, c.ty - ly)
-        && wallAt(c.tx - c.nx, c.ty - c.nz) && open(f, c.tx + c.nx, c.ty + c.nz);
-    })
-    // Prefer the wall middle, then the side farthest from where we entered the room.
-    .sort((a, b) => (Math.abs(a.tx - rcx) + Math.abs(a.ty - rcy)) - (Math.abs(b.tx - rcx) + Math.abs(b.ty - rcy)));
-  if (!good.length) return null;
-  const sc = good[0];
-  const stairs = {
-    tx: sc.tx, ty: sc.ty, nx: sc.nx, nz: sc.nz,
-    frontX: tileCenter(sc.tx + sc.nx), frontZ: tileCenter(sc.ty + sc.nz),
+  const stairSpots = (room: Room): Cand[] => {
+    const cands: Cand[] = [];
+    for (let x = room.x; x < room.x + room.w; x++) {
+      cands.push({ tx: x, ty: room.y - 1, nx: 0, nz: 1 });
+      cands.push({ tx: x, ty: room.y + room.h, nx: 0, nz: -1 });
+    }
+    for (let y = room.y; y < room.y + room.h; y++) {
+      cands.push({ tx: room.x - 1, ty: y, nx: 1, nz: 0 });
+      cands.push({ tx: room.x + room.w, ty: y, nx: -1, nz: 0 });
+    }
+    const [cx, cy] = center(room);
+    return cands
+      .filter((c) => {
+        const lx = c.nz !== 0 ? 1 : 0, ly = c.nx !== 0 ? 1 : 0; // lateral direction
+        return wallAt(c.tx, c.ty) && wallAt(c.tx + lx, c.ty + ly) && wallAt(c.tx - lx, c.ty - ly)
+          && wallAt(c.tx - c.nx, c.ty - c.nz) && open(f, c.tx + c.nx, c.ty + c.nz);
+      })
+      // Prefer the wall middle.
+      .sort((a, b) => (Math.abs(a.tx - cx) + Math.abs(a.ty - cy)) - (Math.abs(b.tx - cx) + Math.abs(b.ty - cy)));
   };
+  const toStairs = (c: Cand): StairsInfo => ({ tx: c.tx, ty: c.ty, nx: c.nx, nz: c.nz, frontX: tileCenter(c.tx + c.nx), frontZ: tileCenter(c.ty + c.nz) });
+  const good = stairSpots(sr);
+  if (!good.length) return null;
+  const stairs = toStairs(good[0]);
+
+  // The way back up (and the merchant waiting beside it) lives in the start room.
+  let upStairs: StairsInfo | null = null;
+  let merchant: MerchantSpot | null = null;
+  if (depth >= 2) {
+    const up = stairSpots(rooms[startRoom]);
+    if (!up.length) return null;
+    upStairs = toStairs(up[0]);
+    // Stand a couple of tiles off to the side of the stairs, outside the cage's footprint, facing the room.
+    const sRoom = rooms[startRoom];
+    const [rcx, rcy] = center(sRoom);
+    let bestD = Infinity;
+    for (let y = sRoom.y; y < sRoom.y + sRoom.h; y++) {
+      for (let x = sRoom.x; x < sRoom.x + sRoom.w; x++) {
+        if (!open(f, x, y)) continue;
+        const mx = tileCenter(x), mz = tileCenter(y);
+        if (Math.hypot(mx - tileCenter(rcx), mz - tileCenter(rcy)) < 3.8) continue; // cage and its walkway
+        if (Math.hypot(mx - upStairs.frontX, mz - upStairs.frontZ) < 1.9) continue; // keep the stairs clear
+        const d = Math.hypot(mx - upStairs.frontX, mz - upStairs.frontZ);
+        if (d < bestD) { bestD = d; merchant = { x: mx, z: mz, nx: 0, nz: 0 }; }
+      }
+    }
+    if (!merchant) return null;
+    const dx = tileCenter(rcx) - merchant.x, dz = tileCenter(rcy) - merchant.z;
+    const len = Math.hypot(dx, dz) || 1;
+    merchant.nx = dx / len;
+    merchant.nz = dz / len;
+  }
 
   const start = { x: tileCenter(sx), z: tileCenter(sy) };
   const near = (x: number, z: number, r: number) => Math.hypot(x - start.x, z - start.z) < r;
@@ -211,7 +248,12 @@ function attempt(seed: number, depth: number): Floor | null {
   // Enemies: scaled by room size and depth; none in the start room; the boss owns the arena.
   const spawns: Spawn[] = [];
   const zombieChance = Math.min(0.5, 0.25 + 0.05 * depth);
-  const kind = (): EnemyKind => (rng() < zombieChance ? 'zombie' : 'skeleton');
+  const archerChance = Math.min(0.14, 0.06 + 0.01 * depth);
+  const mageChance = Math.min(0.1, 0.03 + 0.01 * depth);
+  const kind = (): EnemyKind => {
+    const r = rng();
+    return r < zombieChance ? 'zombie' : r < zombieChance + archerChance ? 'archer' : r < zombieChance + archerChance + mageChance ? 'mage' : 'skeleton';
+  };
   rooms.forEach((r, i) => {
     if (i === startRoom || (isBoss && i === stairsRoom)) return;
     // Early floors are sparse; density ramps up with depth.
@@ -262,8 +304,9 @@ function attempt(seed: number, depth: number): Floor | null {
       if (open(f, x, y)) continue;
       for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
         if (!open(f, x + dx, y + dy)) continue;
-        // Keep the stairs wall and its neighbours clear.
+        // Keep both stairs walls and their neighbours clear.
         if (Math.abs(x - stairs.tx) <= 1 && Math.abs(y - stairs.ty) <= 1) continue;
+        if (upStairs && Math.abs(x - upStairs.tx) <= 1 && Math.abs(y - upStairs.ty) <= 1) continue;
         faces.push({ x: tileCenter(x) + dx * (TILE / 2 + 0.1), z: tileCenter(y) + dy * (TILE / 2 + 0.1), nx: dx, nz: dy });
       }
     }
@@ -282,7 +325,7 @@ function attempt(seed: number, depth: number): Floor | null {
 
   const boss = isBoss ? { x: tileCenter(Math.floor(sr.x + sr.w / 2)), z: tileCenter(Math.floor(sr.y + sr.h / 2)) } : null;
 
-  return { depth, seed, w: MAP_W, h: MAP_H, tiles, rooms, startRoom, stairsRoom, isBossFloor: isBoss, start, stairs, boss, spawns, loot, torches };
+  return { depth, seed, w: MAP_W, h: MAP_H, tiles, rooms, startRoom, stairsRoom, isBossFloor: isBoss, start, stairs, upStairs, merchant, boss, spawns, loot, torches };
 }
 
 /** Deterministic: the same (runSeed, depth) always yields the same floor. */

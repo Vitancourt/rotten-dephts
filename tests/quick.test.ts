@@ -77,3 +77,19 @@ test('equipping via quick slot and old saves without the new fields still load',
   assert.deepEqual(back.inv.quick, [null, null]);
   void equip;
 });
+
+test('sprinting drains stamina, locks out at zero, and resumes after regeneration', async () => {
+  const { createCombat, stepSprint, SPRINT_RESUME } = await import('../src/sim/combat');
+  const c = createCombat();
+  assert.equal(stepSprint(c, false, 1), false);
+  assert.equal(c.stamina, 100);
+  assert.equal(stepSprint(c, true, 1), true);
+  assert.ok(c.stamina < 100);
+  for (let i = 0; i < 200; i++) stepSprint(c, true, 0.1);
+  assert.equal(c.stamina, 0);
+  assert.equal(stepSprint(c, true, 0.1), false, 'cannot sprint while exhausted');
+  c.stamina = SPRINT_RESUME - 1;
+  assert.equal(stepSprint(c, true, 0.1), false, 'still locked below the resume threshold');
+  c.stamina = SPRINT_RESUME;
+  assert.equal(stepSprint(c, true, 0.1), true);
+});

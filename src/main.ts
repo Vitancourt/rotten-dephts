@@ -3,7 +3,7 @@ import { Input } from './core/input';
 import { startLoop } from './core/loop';
 import { audioProbe, initAudio, setMusicMode, setMusicVolume, setVolume, sfx } from './core/audio';
 import { PLAYER_RADIUS, rectSolids, stepPlayer, withExtras, type PlayerState, type Solids } from './sim/movement';
-import { blockIncoming, createCombat, inGuardArc, isGuarding, stepCombat, stepGuard, type Target } from './sim/combat';
+import { blockIncoming, createCombat, inGuardArc, isGuarding, stepCombat, stepGuard, stepSprint, type Target } from './sim/combat';
 import { createVitals, damagePlayer, stepVitals } from './sim/player';
 import { buildNav, type NavGrid } from './sim/nav';
 import {
@@ -30,7 +30,17 @@ import { Arm, buildHand, type HandRig } from './render/hands';
 import { LootView } from './render/loot';
 import { MarkerView } from './render/marker';
 import { FloorView } from './render/floorView';
-import { createRenderer, createScene, EYE_HEIGHT } from './render/scene';
+import { createRenderer, createScene, enableShadows, EYE_HEIGHT } from './render/scene';
+import { PostFx } from './render/post';
+import { createMinimap } from './ui/minimap';
+import { createShopUi } from './ui/shop';
+import { MERCHANT_RADIUS } from './render/merchant';
+import { buyFlask, buyItem, stockFor, type BuyResult, type ShopSales, type Stock } from './sim/shop';
+import { createDust } from './render/dust';
+import { ArrowView } from './render/arrows';
+import { createArrow, stepArrows, type Arrow } from './sim/projectile';
+import { QualityGovernor } from './render/quality';
+import { createExplored, revealAround } from './sim/explore';
 import { createHud, type QuickHud } from './ui/hud';
 import { createFpsCounter } from './ui/fps';
 import { createInventoryUi, type InvView } from './ui/inventory';
@@ -49,6 +59,7 @@ const PICKUP_ITEM = 1.8;
 const MARKER_REACH = 2.2;
 const STAIRS_REACH = 2.6;
 const CAGE_REACH = 3.2;
+const MERCHANT_REACH = 3;
 const AUTOSAVE_EVERY = 8;
 const FADE_TIME = 0.45;
 
@@ -65,21 +76,38 @@ window.addEventListener('keydown', (e) => {
     input.syncOverlay();
   }
 });
-const { scene, camera, hand, updateHand } = createScene();
+const { scene, camera, hand, updateHand, setShadows } = createScene();
+const post = new PostFx(renderer, scene, camera);
 const hud = createHud();
+const minimap = createMinimap();
+let explored: Uint8Array = new Uint8Array(0);
+let lastRevealTile = -1;
 const tickFps = createFpsCounter();
 const crosshair = document.getElementById('crosshair')!;
 const effects = new Effects(scene);
 const floaters = new Floaters();
 const tmpV = new THREE.Vector3();
 const settings = loadSettings();
+const dust = createDust();
+scene.add(dust.points);
+/** Applies a quality tier (see render/quality.ts) on top of the user's low-graphics setting. */
+function applyTier(tier: number): void {
+  const t = settings.lowGfx ? 3 : tier;
+  post.setBloom(t < 1);
+  post.enabled = t < 2;
+  setShadows(t >= 3 ? 0 : t >= 1 ? 512 : 1024);
+  dust.points.visible = t < 3;
+  renderer.setPixelRatio(t >= 2 ? 1 : Math.min(window.devicePixelRatio, 1.5));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  post.setSize(window.innerWidth, window.innerHeight);
+}
+const quality = new QualityGovernor(applyTier);
 function applySettings(): void {
   setVolume(settings.volume);
   setMusicVolume(settings.music);
   camera.fov = settings.fov;
   camera.updateProjectionMatrix();
-  renderer.setPixelRatio(settings.lowGfx ? 1 : Math.min(window.devicePixelRatio, 2));
-  renderer.setSize(window.innerWidth, window.innerHeight);
+  applyTier(quality.tier);
 }
 const menu = createMenu(overlay, {
   settings,
@@ -109,6 +137,9 @@ const runSeed = loaded?.seed ?? (Date.now() & 0x7fffffff);
 let checkpoint = loaded?.checkpoint ?? 1;
 const bosses: number[] = loaded?.bosses ?? [];
 const looted: Record<string, number[]> = loaded?.looted ?? {};
+const killed: Record<string, number[]> = loaded?.killed ?? {};
+const shopSales: Record<string, ShopSales> = loaded?.shop ?? {};
+let shopStock: Stock | null = null;
 
 function persist(): void {
   const data = newSave(runSeed, inv);
@@ -119,6 +150,8 @@ function persist(): void {
   data.marker = marker;
   data.deaths = deaths;
   data.looted = looted;
+  data.killed = killed;
+  data.shop = shopSales;
   writeSave(data);
 }
 
@@ -145,6 +178,7 @@ let floorView: FloorView | null = null;
 let enemies: Enemy[] = [];
 let enemyViews: EnemyView[] = [];
 let drops: Drop[] = [];
+let arrows: Arrow[] = [];
 let boss: Boss | null = null;
 let bossView: BossView | null = null;
 let gateCur = 0; // stairs gate openness, animated
@@ -152,6 +186,7 @@ const entityGroup = new THREE.Group();
 scene.add(entityGroup);
 const lootView = new LootView(scene);
 const markerView = new MarkerView(scene);
+const arrowView = new ArrowView(scene);
 
 // Transition between floors.
 let fade: { phase: 'out' | 'in'; t: number; then: () => void } | null = null;
@@ -242,6 +277,7 @@ function clearFloor(): void {
   for (const v of enemyViews) v.rig.group.removeFromParent();
   enemyViews = [];
   enemies = [];
+  arrows = [];
   drops = [];
   if (bossView) disposeBossView(bossView);
   bossView = null;
@@ -261,7 +297,7 @@ function arrivalSpot(f: Floor): { x: number; z: number } {
 }
 
 /** Builds floor `depth`. `how`: 'intro' wakes you in the cage, 'arrive' puts you beside the cage or start. */
-function loadFloor(depth: number, how: 'intro' | 'arrive'): void {
+function loadFloor(depth: number, how: 'intro' | 'arrive' | 'up'): void {
   clearFloor();
   floorNo = depth;
   floor = generateFloor(runSeed, depth);
@@ -272,16 +308,30 @@ function loadFloor(depth: number, how: 'intro' | 'arrive'): void {
 
   floorView = new FloorView(floor);
   scene.add(floorView.group);
+  explored = createExplored(floor);
+  lastRevealTile = -1;
+  minimap.setFloor(floor, explored);
+  quality.resetWarmup();
 
   closedWorld = cage ? withExtras(base, cage.closed) : base;
   openWorld = cage ? withExtras(base, cage.open) : base;
 
-  enemies = floor.spawns.map((s) => createEnemy(s.kind, s.x, s.z, depth));
+  const dead = new Set(killed[depth] ?? []);
+  enemies = [];
+  floor.spawns.forEach((s, i) => {
+    if (dead.has(i)) return;
+    const e = createEnemy(s.kind, s.x, s.z, depth);
+    e.spawnIndex = i;
+    enemies.push(e);
+  });
   enemyViews = enemies.map((e) => createEnemyView(entityGroup, e));
+  enableShadows(entityGroup);
+  shopStock = floor.merchant ? stockFor(runSeed, depth) : null;
 
   if (floor.isBossFloor && floor.boss && !bosses.includes(depth)) {
     boss = createBoss(depth, floor.boss.x, floor.boss.z);
     bossView = createBossView(entityGroup, boss);
+    enableShadows(entityGroup);
   }
 
   const taken = new Set(looted[depth] ?? []);
@@ -297,13 +347,19 @@ function loadFloor(depth: number, how: 'intro' | 'arrive'): void {
     player.x = floor.start.x;
     player.z = floor.start.z;
     startIntro(intro);
+  } else if (how === 'up') {
+    // Coming back up: stand a little way in front of this floor's way down, facing into the room.
+    const st = floor.stairs;
+    player.x = st.frontX + st.nx * 1.4;
+    player.z = st.frontZ + st.nz * 1.4;
+    skipIntro(intro);
   } else {
     const a = how === 'arrive' ? arrivalSpot(floor) : { x: floor.start.x, z: floor.start.z };
     player.x = a.x;
     player.z = a.z;
     skipIntro(intro);
   }
-  player.yaw = 0;
+  player.yaw = how === 'up' ? Math.atan2(-floor.stairs.nx, -floor.stairs.nz) : 0;
   player.pitch = 0;
 
   gateCur = stairsUnlocked() ? 1 : 0;
@@ -333,7 +389,17 @@ function descend(): void {
   });
 }
 
+function ascend(): void {
+  sfx.stairs();
+  beginTransition(() => {
+    loadFloor(floorNo - 1, 'up');
+    hud.message(`Depth ${floorNo}`, 2500);
+    persist();
+  });
+}
+
 function respawn(): void {
+  for (const k of Object.keys(killed)) delete killed[k]; // the dead walk again after you fall
   vitals = createVitals();
   combat = createCombat();
   deadTimer = 0;
@@ -373,6 +439,34 @@ function refreshUi(): void {
   invUi.refresh(invView());
 }
 
+const salesFor = (d: number): ShopSales => (shopSales[d] ??= { flasks: 0, items: [] });
+const shopView = () => ({ depth: floorNo, gold: inv.gold, stock: shopStock!, sales: salesFor(floorNo) });
+const BUY_NOTE: Record<BuyResult, string> = { ok: '', gold: 'Not enough gold', full: 'No room to carry that', soldout: 'Sold out' };
+function afterBuy(res: BuyResult): void {
+  if (res === 'ok') {
+    sfx.coin();
+    recompute();
+    persist();
+  } else {
+    hud.message(BUY_NOTE[res], 1500);
+  }
+  refreshUi();
+  shopUi.refresh(shopView());
+  shopUi.note(BUY_NOTE[res]);
+}
+const shopUi = createShopUi({
+  buyFlask: () => afterBuy(buyFlask(inv, shopStock!, salesFor(floorNo))),
+  buyItem: (id) => afterBuy(buyItem(inv, shopStock!, salesFor(floorNo), id)),
+  close: () => setMenu(false),
+});
+function openShop(): void {
+  if (!shopStock) return;
+  input.menuOpen = true;
+  shopUi.open(shopView());
+  document.exitPointerLock();
+  input.syncOverlay();
+}
+
 function setMenu(open: boolean): void {
   input.menuOpen = open;
   if (open) {
@@ -380,6 +474,7 @@ function setMenu(open: boolean): void {
     document.exitPointerLock();
   } else {
     invUi.close();
+    shopUi.close();
     input.clearPresses(); // Q/E/F hit while the menu was open must not fire afterwards
     input.lock(); // if the browser refuses, the pause menu shows instead
   }
@@ -388,6 +483,7 @@ function setMenu(open: boolean): void {
 
 // ---------------------------------------------------------------- gameplay
 function onEnemyKilled(e: Enemy): void {
+  if (e.spawnIndex !== undefined) (killed[floorNo] ??= []).push(e.spawnIndex);
   sfx.enemyDie();
   effects.death(e.x, e.z);
   inv.xp += xpReward(ENEMY_DEFS[e.kind].xp, floorNo);
@@ -509,6 +605,7 @@ function onBossEvents(events: BossEvent[]): void {
         forceRise(e);
         enemies.push(e);
         enemyViews.push(createEnemyView(entityGroup, e));
+    enableShadows(entityGroup);
       }
     } else if (ev.type === 'die') {
       onBossKilled(boss);
@@ -568,19 +665,22 @@ function update(dt: number): void {
   const world = intro.phase === 'free' ? openWorld : closedWorld;
   if (mobile) {
     const px0 = player.x, pz0 = player.z;
+    const fwd = (input.down('KeyW') ? 1 : 0) - (input.down('KeyS') ? 1 : 0);
+    const side = (input.down('KeyD') ? 1 : 0) - (input.down('KeyA') ? 1 : 0);
+    const sprinting = stepSprint(combat, !guarding && (input.down('ShiftLeft') || input.down('ShiftRight')) && (fwd !== 0 || side !== 0), dt);
     stepPlayer(
       player,
       {
-        forward: (input.down('KeyW') ? 1 : 0) - (input.down('KeyS') ? 1 : 0),
-        strafe: (input.down('KeyD') ? 1 : 0) - (input.down('KeyA') ? 1 : 0),
-        sprint: !guarding && (input.down('ShiftLeft') || input.down('ShiftRight')),
+        forward: fwd,
+        strafe: side,
+        sprint: sprinting,
         speedMul: derived.speedMul * (guarding ? 0.6 : 1),
       },
       dt,
       world,
     );
     stepAccum += Math.hypot(player.x - px0, player.z - pz0);
-    const stride = !guarding && (input.down('ShiftLeft') || input.down('ShiftRight')) ? STRIDE_SPRINT : STRIDE_WALK;
+    const stride = sprinting ? STRIDE_SPRINT : STRIDE_WALK;
     if (stepAccum >= stride) {
       stepAccum = 0;
       sfx.step();
@@ -609,10 +709,22 @@ function update(dt: number): void {
     for (const ev of stepEnemy(e, player.x, player.z, !vitals.dead, dt, nav, world)) {
       if (ev.type === 'rise') sfx.rise();
       else if (ev.type === 'windup') sfx.enemyWindup();
-      else hurtPlayer(ev.damage, ev.fromX, ev.fromZ);
+      else if (ev.type === 'shoot') {
+        arrows.push(createArrow(ev.x, ev.z, ev.tx, ev.tz, ev.damage, ev.proj));
+        if (ev.proj === 'fireball') sfx.fireball();
+        else sfx.bow();
+      } else hurtPlayer(ev.damage, ev.fromX, ev.fromZ);
     }
   }
   separateEnemies(enemies);
+  const spent: Arrow[] = [];
+  for (const h of stepArrows(arrows, dt, world, player.x, player.z, !vitals.dead, spent)) hurtPlayer(h.damage, h.fromX, h.fromZ);
+  for (const m of spent) {
+    if (m.kind !== 'fireball') continue;
+    effects.hit(m.x, 1.2, m.z);
+    effects.pickup(m.x, 1.2, m.z, 0xff7a20);
+    sfx.boom();
+  }
   if (boss && !frozen) {
     onBossEvents(stepBoss(boss, player.x, player.z, !vitals.dead, playerInArena(), dt, nav, world));
     if (bossActive(boss)) {
@@ -633,6 +745,16 @@ function update(dt: number): void {
     if (e.state === 'dormant' || e.state === 'dead' || e.state === 'rising') continue;
     const dx = player.x - e.x, dz = player.z - e.z;
     const min = e.radius + PLAYER_RADIUS;
+    const d = Math.hypot(dx, dz);
+    if (d < min && d > 1e-6) {
+      player.x += (dx / d) * (min - d);
+      player.z += (dz / d) * (min - d);
+    }
+  }
+
+  if (floor.merchant) {
+    const dx = player.x - floor.merchant.x, dz = player.z - floor.merchant.z;
+    const min = MERCHANT_RADIUS + PLAYER_RADIUS;
     const d = Math.hypot(dx, dz);
     if (d < min && d > 1e-6) {
       player.x += (dx / d) * (min - d);
@@ -676,6 +798,11 @@ function update(dt: number): void {
   const nearMarker = alive && marker && marker.floor === floorNo && Math.hypot(marker.x - player.x, marker.z - player.z) < MARKER_REACH;
   const nearStairs = alive && Math.hypot(floor.stairs.frontX - player.x, floor.stairs.frontZ - player.z) < STAIRS_REACH;
   const nearCageNow = alive && nearCage();
+  // Merchant and up stairs share a corner: whichever you stand closer to wins the prompt.
+  const dUp = floor.upStairs ? Math.hypot(floor.upStairs.frontX - player.x, floor.upStairs.frontZ - player.z) : Infinity;
+  const dMerchant = floor.merchant ? Math.hypot(floor.merchant.x - player.x, floor.merchant.z - player.z) : Infinity;
+  const nearUp = alive && dUp < STAIRS_REACH && dUp <= dMerchant;
+  const nearMerchant = alive && dMerchant < MERCHANT_REACH && dMerchant < dUp;
 
   if (nearMarker && marker) {
     hud.prompt('[F] Recover your lost belongings');
@@ -708,6 +835,12 @@ function update(dt: number): void {
     } else {
       hud.prompt('<span style="color:#c9776a">The way down is sealed. Defeat the guardian.</span>');
     }
+  } else if (nearMerchant) {
+    hud.prompt('[F] Trade with the merchant');
+    if (pressedE) openShop();
+  } else if (nearUp) {
+    hud.prompt(`[F] Climb back to depth ${floorNo - 1}`);
+    if (pressedE) ascend();
   } else if (nearCageNow) {
     hud.prompt('[F] Rest at the cage');
     if (pressedE) {
@@ -785,6 +918,12 @@ function render(): void {
   hud.setVitals(vitals.hp, vitals.maxHp, combat.stamina, combat.maxStamina);
   hud.setHurt(vitals.hurt);
   hud.setCounts(inv.gold, inv.xp, floorNo);
+  const tileNow = toTile(player.z) * 1000 + toTile(player.x);
+  if (tileNow !== lastRevealTile) {
+    lastRevealTile = tileNow;
+    if (revealAround(floor, explored, player.x, player.z)) minimap.invalidate();
+  }
+  minimap.draw(player.x, player.z, player.yaw);
   hud.setQuick(quickHud());
   hud.setFade(fade ? (fade.phase === 'out' ? Math.min(1, fade.t) : Math.max(0, 1 - fade.t)) : 0);
 
@@ -815,12 +954,16 @@ function render(): void {
   lastRender = now;
   effects.update(frameDt);
   floaters.update(frameDt, camera, tmpV);
-  renderer.render(scene, camera);
+  arrowView.sync(arrows, now);
+  dust.update(now, player.x, player.z);
+  post.render(now, scene, camera);
+  quality.frame(frameDt * 1000);
   tickFps();
 }
 
 window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
+  post.setSize(window.innerWidth, window.innerHeight);
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
 });
@@ -836,6 +979,6 @@ if (import.meta.env.DEV) {
     player, THREE, inv, levels, bosses, persist, recompute, refreshUi,
     enemies: () => enemies, drops: () => drops, floor: () => floor, floorNo: () => floorNo,
     marker: () => marker, vitals: () => vitals, derived: () => derived, intro, checkpoint: () => checkpoint,
-    boss: () => boss, audioProbe, setMusicMode, setMusicVolume, nav: () => nav, input, effects, hurt: hurtPlayer, combat: () => combat, go: (d: number) => loadFloor(d, 'arrive'), rectSolids, TILE, renderer, scene, update, render,
+    quality, boss: () => boss, audioProbe, setMusicMode, setMusicVolume, nav: () => nav, input, effects, hurt: hurtPlayer, combat: () => combat, go: (d: number) => loadFloor(d, 'arrive'), rectSolids, TILE, renderer, scene, update, render,
   };
 }

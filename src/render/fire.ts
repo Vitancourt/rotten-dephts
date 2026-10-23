@@ -43,7 +43,7 @@ export interface Fire {
 const EMBERS = 4;
 
 /** Layered additive billboards with flicker, plus rising embers. Origin is the base of the flame. */
-export function createFire(size = 1): Fire {
+export function createFire(size = 1, emberCount = EMBERS): Fire {
   const object = new THREE.Group();
   const layers = [
     { s: sprite(outerTex, 0.2 * size, 0.34 * size), seed: 0, y: 0.1 },
@@ -53,10 +53,10 @@ export function createFire(size = 1): Fire {
   for (const l of layers) {
     object.add(l.s);
   }
-  const embers = Array.from({ length: EMBERS }, (_, i) => {
+  const embers = Array.from({ length: emberCount }, (_, i) => {
     const s = sprite(emberTex, 0.025 * size, 0.04 * size);
     object.add(s);
-    return { s, offset: i / EMBERS, seed: Math.random() * 10 };
+    return { s, offset: i / emberCount, seed: Math.random() * 10 };
   });
 
   const base = layers.map((l) => l.s.scale.clone());

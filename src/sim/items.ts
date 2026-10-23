@@ -94,7 +94,8 @@ const AFFIXES: Affix[] = [
 /** No guard ever absorbs more than this share of a hit. */
 export const MAX_BLOCK = 75;
 
-export const depthScale = (depth: number): number => 1 + 0.08 * (depth - 1);
+/** Loot stats grow 5% per floor. */
+export const depthScale = (depth: number): number => 1 + 0.05 * (depth - 1);
 
 function newId(r: Rng): string {
   return Math.floor(r() * 1e9).toString(36) + Math.floor(r() * 1e9).toString(36);

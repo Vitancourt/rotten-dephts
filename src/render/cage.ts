@@ -1,8 +1,9 @@
 import * as THREE from 'three';
 import { CAGE } from '../sim/intro';
+import { surfaceMaterial } from './textures';
 
-const iron = new THREE.MeshStandardMaterial({ color: 0x2d2a27, roughness: 0.7, metalness: 0.6, flatShading: true });
-const rust = new THREE.MeshStandardMaterial({ color: 0x4a2f1c, roughness: 1, flatShading: true });
+const iron = surfaceMaterial('metal', 0x3a3632, { rough: 0.9, metalness: 0.7 });
+const rust = surfaceMaterial('metal', 0x5a3a22, { rough: 1, metalness: 0.4 });
 
 const H = 2.3;
 const BAR = 0.025;

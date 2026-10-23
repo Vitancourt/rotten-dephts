@@ -133,6 +133,18 @@ export const sfx = {
     tone(55, 90, 1.2, 'sawtooth', 0.12);
   },
   enemyWindup: () => tone(200, 120, 0.3, 'sawtooth', 0.08),
+  fireball: () => {
+    noise(0.45, 250, 1400, 0.3, 'bandpass');
+    tone(110, 280, 0.45, 'sawtooth', 0.12);
+  },
+  boom: () => {
+    noise(0.35, 700, 90, 0.5, 'lowpass');
+    tone(90, 40, 0.3, 'sine', 0.35);
+  },
+  bow: () => {
+    noise(0.16, 2400, 700, 0.3, 'bandpass');
+    tone(320, 140, 0.2, 'triangle', 0.22);
+  },
   creak: () => {
     tone(180, 420, 0.5, 'sawtooth', 0.12);
     tone(420, 210, 0.7, 'sawtooth', 0.1, 0.5);
